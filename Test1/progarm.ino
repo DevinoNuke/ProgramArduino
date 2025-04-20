@@ -5,6 +5,7 @@
 #include <PubSubClient.h>
 #include <Fuzzy.h>
 #include <ArduinoJson.h>
+#include "esp32-hal-ledc.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -185,7 +186,7 @@ void setVoltage(int level) {
     } else {
       voltageLevel = level;
       int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
-      ledcWrite(pwmPin, dutyCycle);
+      ledcWrite(0, dutyCycle);  // Gunakan channel 0
 
       display.clearDisplay();
       display.setTextSize(1);
@@ -298,9 +299,10 @@ void setup() {
   pinMode(relay, OUTPUT);
   digitalWrite(relay, HIGH);  // Relay OFF pada awal (active LOW)
   
-  // Setup PWM
-  ledcSetup(0, 5000, 8);     // Channel 0, 5000 Hz, 8-bit resolution
-  ledcAttachPin(pwmPin, 0);  // Attach pwmPin ke channel 0
+  // Setup PWM dengan cara yang benar untuk ESP32
+  ledcAttachPin(pwmPin, 0);    // Attach pwmPin ke channel 0
+  ledcSetup(0, 5000, 8);       // Channel 0, Freq 5000Hz, 8-bit resolution
+  ledcWrite(0, 0);             // Set initial duty cycle to 0
 
   pinMode(gsrPin1, INPUT);
   pinMode(gsrPin2, INPUT);
