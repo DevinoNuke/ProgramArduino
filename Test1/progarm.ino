@@ -304,6 +304,21 @@ void loop() {
 
   client.loop();
 
+  if (therapyActive) {
+    // Tambahkan debug prints
+    Serial.print("Therapy Duration (ms): ");
+    Serial.println(therapyDuration);
+    Serial.print("Elapsed Time (ms): ");
+    Serial.println(millis() - therapyStartTime);
+    
+    sendStatusMessage();
+    
+    if (millis() - therapyStartTime >= therapyDuration) {
+      Serial.println("Therapy duration reached, stopping therapy");
+      stopTherapy();
+    }
+  }
+
   // Baca nilai dari kedua sensor GSR
   int gsrValue1 = analogRead(gsrPin1);
   int gsrValue2 = analogRead(gsrPin2);
@@ -338,14 +353,6 @@ void loop() {
 
   String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
   client.publish(status_topic, gsrStr.c_str()); 
-
-  if (therapyActive) {
-    sendStatusMessage(); // Kirim status dalam format JSON
-    
-    if (millis() - therapyStartTime >= therapyDuration) {
-      stopTherapy();
-    }
-  }
 
   delay(500);
 }
