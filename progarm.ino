@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Fuzzy.h>
+#include <ArduinoJson.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -44,6 +45,9 @@ FuzzySet *gsrLow, *gsrMedium, *gsrHigh;
 FuzzySet *voltageLow, *voltageMedium, *voltageHigh;
 FuzzySet *durationShort, *durationMedium, *durationLong;
 
+// Ukuran buffer untuk JSON
+const size_t CAPACITY = JSON_OBJECT_SIZE(10);
+
 void setup_wifi() {
   delay(10);
   Serial.println();
@@ -67,58 +71,100 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("]: ");
   
-  String message = "";
-  for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
-    Serial.print((char)payload[i]);
+  // Buat buffer untuk JSON
+  StaticJsonDocument<CAPACITY> doc;
+  
+  // Parse JSON message
+  DeserializationError error = deserializeJson(doc, payload, length);
+  
+  if (error) {
+    String errorMsg = "{\"status\": \"error\", \"message\": \"Format JSON tidak valid\"}";
+    client.publish(status_topic, errorMsg.c_str());
+    return;
   }
-  Serial.println();
 
   if (strcmp(topic, control_topic) == 0) {
-    if (message.equalsIgnoreCase("stop")) {
-      if (therapyActive) {
-        stopTherapy();
-      } else {
-        Serial.println("No therapy is running.");
-        client.publish(status_topic, "Tidak ada terapi yang sedang berjalan");
-      }
-    } else {
-      // Cek apakah pesan berisi angka (durasi dalam menit)
-      int duration = message.toInt();
-      if (duration > 0) {
-        if (!therapyActive) {
-          therapyDuration = duration * 60 * 1000; // Konversi ke milidetik
-          startTherapy();
+    // Cek command dari JSON
+    const char* command = doc["command"];
+    
+    if (command != nullptr) {
+      if (strcmp(command, "stop") == 0) {
+        if (therapyActive) {
+          stopTherapy();
         } else {
-          String msg = "Terapi sedang berjalan. Mohon stop terlebih dahulu.";
-          Serial.println(msg);
+          String msg = "{\"status\": \"info\", \"message\": \"Tidak ada terapi yang sedang berjalan\"}";
           client.publish(status_topic, msg.c_str());
         }
-      } else {
-        String msg = "Format pesan tidak valid. Kirim angka untuk durasi dalam menit atau 'stop' untuk menghentikan.";
-        Serial.println(msg);
-        client.publish(status_topic, msg.c_str());
+      } else if (strcmp(command, "start") == 0) {
+        int duration = doc["duration"] | 0; // Default 0 jika tidak ada
+        if (duration > 0) {
+          if (!therapyActive) {
+            therapyDuration = duration * 60 * 1000; // Konversi ke milidetik
+            startTherapy();
+          } else {
+            String msg = "{\"status\": \"warning\", \"message\": \"Terapi sedang berjalan\"}";
+            client.publish(status_topic, msg.c_str());
+          }
+        } else {
+          String msg = "{\"status\": \"error\", \"message\": \"Durasi harus lebih dari 0\"}";
+          client.publish(status_topic, msg.c_str());
+        }
       }
     }
   }
 }
 
-void reconnect() {
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-    if (client.connect("mqtt_esp")) {
-      Serial.println("connected");
-      client.subscribe(control_topic);
-      // Kirim pesan instruksi penggunaan
-      String welcomeMsg = "Alat siap digunakan. Kirim angka (misal: 5) untuk menjalankan terapi selama 5 menit, atau 'stop' untuk menghentikan.";
-      client.publish(status_topic, welcomeMsg.c_str());
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
+void sendStatusMessage() {
+  StaticJsonDocument<CAPACITY> doc;
+  
+  if (therapyActive) {
+    unsigned long elapsedTime = (millis() - therapyStartTime) / 1000;
+    unsigned long remainingTime = (therapyDuration / 1000) - elapsedTime;
+    
+    doc["status"] = "running";
+    doc["elapsed_time"] = elapsedTime;
+    doc["remaining_time"] = remainingTime;
+    doc["voltage"] = map(voltageLevel, 0, 100, 0, 24);
+    doc["duration_total"] = therapyDuration / 1000;
+  } else {
+    doc["status"] = "stopped";
   }
+
+  char jsonBuffer[256];
+  serializeJson(doc, jsonBuffer);
+  client.publish(status_topic, jsonBuffer);
+}
+
+void startTherapy() {
+  therapyStartTime = millis();
+  therapyActive = true;
+  digitalWrite(relay, LOW); // Menyalakan relay
+  
+  StaticJsonDocument<CAPACITY> doc;
+  doc["status"] = "started";
+  doc["duration"] = therapyDuration / 60000;
+  doc["voltage"] = map(voltageLevel, 0, 100, 0, 24);
+  
+  char jsonBuffer[256];
+  serializeJson(doc, jsonBuffer);
+  client.publish(status_topic, jsonBuffer);
+  
+  Serial.println("Therapy started.");
+}
+
+void stopTherapy() {
+  therapyActive = false;
+  digitalWrite(relay, HIGH); // Mematikan relay
+  
+  StaticJsonDocument<CAPACITY> doc;
+  doc["status"] = "finished";
+  doc["total_time"] = (millis() - therapyStartTime) / 1000;
+  
+  char jsonBuffer[256];
+  serializeJson(doc, jsonBuffer);
+  client.publish(status_topic, jsonBuffer);
+  
+  Serial.println("Therapy finished.");
 }
 
 void setVoltage(int level) {
@@ -153,25 +199,6 @@ void setVoltage(int level) {
   } else {
     Serial.println("Invalid voltage value (0-100).");
   }
-}
-
-void startTherapy() {
-  therapyStartTime = millis();
-  therapyActive = true;
-  digitalWrite(relay, LOW); // Menyalakan relay
-  Serial.println("Therapy started.");
-  Serial.print("Therapy duration: ");
-  Serial.print(therapyDuration / 60000);
-  Serial.println(" minutes");
-  Serial.print("Voltage: ");
-  Serial.print(map(voltageLevel, 0, 100, 0, 24));
-  Serial.println(" V");
-}
-
-void stopTherapy() {
-  therapyActive = false;
-  digitalWrite(relay, HIGH); // Mematikan relay
-  Serial.println("Therapy finished.");
 }
 
 void setupFuzzy() {
@@ -293,12 +320,8 @@ void loop() {
   client.publish(mqtt_topic, gsrStr.c_str()); 
 
   if (therapyActive) {
-    Serial.print("Therapy Active: ");
-    Serial.print("Elapsed Time: ");
-    Serial.print(millis() - therapyStartTime);
-    Serial.print(" Duration: ");
-    Serial.println(therapyDuration);
-
+    sendStatusMessage(); // Kirim status dalam format JSON
+    
     if (millis() - therapyStartTime >= therapyDuration) {
       stopTherapy();
     }
