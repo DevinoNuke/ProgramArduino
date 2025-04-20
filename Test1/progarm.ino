@@ -458,6 +458,7 @@ void loop() {
   }
   
   display.display();
+  String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
   client.publish(mqtt_topic, gsrStr.c_str()); 
 
   // Debug log untuk monitoring
