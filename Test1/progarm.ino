@@ -140,7 +140,10 @@ void sendStatusMessage() {
 void startTherapy() {
   therapyStartTime = millis();
   therapyActive = true;
-  digitalWrite(relay, LOW); // Menyalakan relay
+  
+  // Aktifkan relay dan PWM
+  digitalWrite(relay, LOW);  // Nyalakan relay (active LOW)
+  setVoltage(50);  // Set voltage ke level default (50%)
   
   StaticJsonDocument<CAPACITY> doc;
   doc["status"] = "started";
@@ -152,6 +155,9 @@ void startTherapy() {
   client.publish(status_topic, jsonBuffer);
   
   Serial.println("Therapy started.");
+  Serial.println("Relay activated.");
+  Serial.print("Initial voltage level: ");
+  Serial.println(voltageLevel);
 }
 
 void stopTherapy() {
@@ -288,10 +294,14 @@ void setup() {
   client.setCallback(callback);
   Serial.println("MQTT setup complete");
 
+  // Setup relay pin
   pinMode(relay, OUTPUT);
-  digitalWrite(relay, HIGH); // Matikan relay saat awal
+  digitalWrite(relay, HIGH);  // Relay OFF pada awal (active LOW)
+  
+  // Setup PWM
+  ledcSetup(0, 5000, 8);     // Channel 0, 5000 Hz, 8-bit resolution
+  ledcAttachPin(pwmPin, 0);  // Attach pwmPin ke channel 0
 
-  ledcAttach(pwmPin, 5000, 8);
   pinMode(gsrPin1, INPUT);
   pinMode(gsrPin2, INPUT);
 
@@ -313,6 +323,12 @@ void loop() {
   if (therapyActive) {
     unsigned long currentTime = millis();
     unsigned long elapsedTime = currentTime - therapyStartTime;
+    
+    // Debug print untuk relay
+    Serial.print("Therapy Active. Relay state: ");
+    Serial.println(digitalRead(relay) == LOW ? "ON" : "OFF");
+    Serial.print("Voltage Level: ");
+    Serial.println(voltageLevel);
     
     // Kirim status setiap 1 detik
     static unsigned long lastStatusTime = 0;
