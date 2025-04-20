@@ -13,8 +13,8 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // Update kredensial Wi-Fi
-const char* ssid = "Devino";       // Ganti dengan SSID Anda
-const char* password = "nono1301";  // Ganti dengan password Anda
+const char* ssid = "SKBM Lt.2";       // Ganti dengan SSID Anda
+const char* password = "senyumdulu";  // Ganti dengan password Anda
 
 // Update detail broker MQTT
 const char* mqtt_server = "broker.emqx.io"; 
@@ -118,14 +118,16 @@ void sendStatusMessage() {
   StaticJsonDocument<CAPACITY> doc;
   
   if (therapyActive) {
-    unsigned long elapsedTime = (millis() - therapyStartTime) / 1000;
-    unsigned long remainingTime = (therapyDuration / 1000) - elapsedTime;
+    // Hitung waktu dalam detik
+    unsigned long currentTime = millis();
+    unsigned long elapsedTimeSeconds = (currentTime - therapyStartTime) / 1000;
+    unsigned long remainingTimeSeconds = (therapyDuration / 1000) - elapsedTimeSeconds;
     
     doc["status"] = "running";
-    doc["elapsed_time"] = elapsedTime;
-    doc["remaining_time"] = remainingTime;
+    doc["elapsed_time"] = elapsedTimeSeconds;
+    doc["remaining_time"] = remainingTimeSeconds;
     doc["voltage"] = map(voltageLevel, 0, 100, 0, 24);
-    doc["duration_total"] = therapyDuration / 1000;
+    doc["duration_total"] = therapyDuration / 1000; // Konversi ke detik
   } else {
     doc["status"] = "stopped";
   }
@@ -304,55 +306,35 @@ void loop() {
 
   client.loop();
 
-  if (therapyActive) {
-    // Tambahkan debug prints
-    Serial.print("Therapy Duration (ms): ");
-    Serial.println(therapyDuration);
-    Serial.print("Elapsed Time (ms): ");
-    Serial.println(millis() - therapyStartTime);
-    
-    sendStatusMessage();
-    
-    if (millis() - therapyStartTime >= therapyDuration) {
-      Serial.println("Therapy duration reached, stopping therapy");
-      stopTherapy();
-    }
-  }
-
   // Baca nilai dari kedua sensor GSR
   int gsrValue1 = analogRead(gsrPin1);
   int gsrValue2 = analogRead(gsrPin2);
 
-  // Proses fuzzy untuk sensor GSR pertama
-  fuzzy->setInput(1, gsrValue1);
-  fuzzy->fuzzify();
-  float optimalVoltage = fuzzy->defuzzify(1);
-  float optimalDuration = fuzzy->defuzzify(2);
+  if (therapyActive) {
+    unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - therapyStartTime;
+    
+    // Kirim status setiap 1 detik
+    static unsigned long lastStatusTime = 0;
+    if (currentTime - lastStatusTime >= 1000) {
+      sendStatusMessage();
+      lastStatusTime = currentTime;
+    }
+    
+    // Cek apakah terapi sudah selesai
+    if (elapsedTime >= therapyDuration) {
+      stopTherapy();
+    }
+  }
 
-  // Gunakan nilai optimal untuk tegangan dan waktu
-  setVoltage(map(optimalVoltage, 0, 24, 0, 100));
-  therapyDuration = optimalDuration * 60 * 1000; 
-
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.setTextSize(1);
-  display.print("GSR1: ");
-  display.print(gsrValue1);
-  display.setCursor(0, 20);
-  display.print("GSR2: ");
-  display.print(gsrValue2);
-  display.setCursor(0, 40);
-  display.print("Voltage: ");
-  display.print(map(voltageLevel, 0, 100, 0, 24));
-  display.print(" V");
-  display.setCursor(0, 50);
-  display.print("Duration: ");
-  display.print(therapyDuration / 60000);
-  display.print(" min");
-  display.display();
-
-  String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
-  client.publish(status_topic, gsrStr.c_str()); 
+  // Format GSR data sebagai JSON
+  StaticJsonDocument<CAPACITY> gsrDoc;
+  gsrDoc["gsr1"] = gsrValue1;
+  gsrDoc["gsr2"] = gsrValue2;
+  
+  char gsrBuffer[256];
+  serializeJson(gsrDoc, gsrBuffer);
+  client.publish(status_topic, gsrBuffer);
 
   delay(500);
 }
