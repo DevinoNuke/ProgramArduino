@@ -251,6 +251,26 @@ void setupFuzzy() {
   fuzzy->addFuzzyRule(new FuzzyRule(3, ifGsrHigh, thenVoltageLowDurationShort));
 }
 
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      // Subscribe ke topic yang diperlukan
+      client.subscribe(control_topic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -317,7 +337,7 @@ void loop() {
   display.display();
 
   String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
-  client.publish(mqtt_topic, gsrStr.c_str()); 
+  client.publish(status_topic, gsrStr.c_str()); 
 
   if (therapyActive) {
     sendStatusMessage(); // Kirim status dalam format JSON
