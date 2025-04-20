@@ -20,13 +20,14 @@ const char* password = "senyumdulu";  // Ganti dengan password Anda
 // Update detail broker MQTT
 const char* mqtt_server = "broker.emqx.io"; 
 const int mqtt_port = 1883; 
+const char* mqtt_topic = "sensor/gsr"; 
 const char* control_topic = "therapy/control"; // Ganti nama topic menjadi lebih jelas
 const char* status_topic = "therapy/status";
 
 // Pin untuk sensor GSR dan relay
 const int gsrPin1 = 32; 
 const int gsrPin2 = 33; 
-const int relay = 26;
+const int relay = 5;
 const int pwmPin = 25;
 
 WiFiClient espClient;
@@ -48,6 +49,10 @@ FuzzySet *durationShort, *durationMedium, *durationLong;
 
 // Ukuran buffer untuk JSON
 const size_t CAPACITY = JSON_OBJECT_SIZE(10);
+
+// Tambahkan deklarasi global
+int gsrValue1 = 0;
+int gsrValue2 = 0;
 
 void setup_wifi() {
   delay(10);
@@ -142,10 +147,26 @@ void startTherapy() {
   therapyStartTime = millis();
   therapyActive = true;
   
-  // Aktifkan relay dan PWM
-  digitalWrite(relay, LOW);  // Nyalakan relay (active LOW)
-  setVoltage(50);  // Set voltage ke level default (50%)
+  // AKTIFKAN relay - pastikan ini HIGH jika relay aktif HIGH (atau LOW jika aktif LOW)
+  digitalWrite(relay, LOW);  // Aktifkan relay
   
+  // Set voltage level dan AKTIFKAN PWM dengan nilai yang cukup tinggi
+  voltageLevel = 50;  // Set ke 50% (sekitar 12V)
+  int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
+  ledcWrite(0, dutyCycle);  // Aktifkan PWM
+  
+  // Debug untuk relay dan PWM
+  Serial.println("Therapy started.");
+  Serial.print("Relay PIN: ");
+  Serial.print(relay);
+  Serial.print(" STATE: ");
+  Serial.println(digitalRead(relay));
+  Serial.print("PWM PIN: ");
+  Serial.print(pwmPin);
+  Serial.print(" Duty Cycle: ");
+  Serial.println(dutyCycle);
+  
+  // Update display dan kirim status
   StaticJsonDocument<CAPACITY> doc;
   doc["status"] = "started";
   doc["duration"] = therapyDuration / 60000;
@@ -154,16 +175,16 @@ void startTherapy() {
   char jsonBuffer[256];
   serializeJson(doc, jsonBuffer);
   client.publish(status_topic, jsonBuffer);
-  
-  Serial.println("Therapy started.");
-  Serial.println("Relay activated.");
-  Serial.print("Initial voltage level: ");
-  Serial.println(voltageLevel);
 }
 
 void stopTherapy() {
   therapyActive = false;
-  digitalWrite(relay, HIGH); // Mematikan relay
+  
+  // MATIKAN relay (HIGH untuk OFF)
+  digitalWrite(relay, HIGH);
+  
+  // Update display ketika terapi berakhir
+  updateDisplay(false, gsrValue1, gsrValue2);
   
   StaticJsonDocument<CAPACITY> doc;
   doc["status"] = "finished";
@@ -174,6 +195,52 @@ void stopTherapy() {
   client.publish(status_topic, jsonBuffer);
   
   Serial.println("Therapy finished.");
+  Serial.println("Relay deactivated - PIN STATE: HIGH");
+}
+
+// Fungsi untuk memperbarui display
+void updateDisplay(bool isActive, int gsr1, int gsr2) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  display.setCursor(0, 0);
+  display.print("GSR1: ");
+  display.print(gsr1);
+  
+  display.setCursor(0, 10);
+  display.print("GSR2: ");
+  display.print(gsr2);
+  
+  display.setCursor(0, 20);
+  display.print("Voltage: ");
+  display.print(map(voltageLevel, 0, 100, 0, 24));
+  display.print(" V");
+  
+  display.setCursor(0, 30);
+  display.print("Duration: ");
+  display.print(therapyDuration / 60000);
+  display.print(" min");
+  
+  if (isActive) {
+    // Tampilkan info terapi aktif
+    unsigned long remaining = (therapyDuration - (millis() - therapyStartTime)) / 1000;
+    
+    display.setCursor(0, 40);
+    display.print("STATUS: AKTIF");
+    display.setCursor(0, 50);
+    display.print("Sisa: ");
+    display.print(remaining);
+    display.print(" detik");
+  } else {
+    // Tampilkan info terapi tidak aktif
+    display.setCursor(0, 40);
+    display.print("STATUS: SIAP");
+    display.setCursor(0, 50);
+    display.print("Tunggu perintah...");
+  }
+  
+  display.display();
 }
 
 void setVoltage(int level) {
@@ -186,7 +253,7 @@ void setVoltage(int level) {
     } else {
       voltageLevel = level;
       int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
-      ledcWrite(0, dutyCycle);  // Gunakan channel 0
+      analogWrite(pwmPin, dutyCycle);  // Gunakan analogWrite sebagai alternatif
 
       display.clearDisplay();
       display.setTextSize(1);
@@ -270,6 +337,7 @@ void reconnect() {
     if (client.connect(clientId.c_str())) {
       Serial.println("connected");
       // Subscribe ke topic yang diperlukan
+      client.subscribe(mqtt_topic);
       client.subscribe(control_topic);
     } else {
       Serial.print("failed, rc=");
@@ -299,11 +367,10 @@ void setup() {
   pinMode(relay, OUTPUT);
   digitalWrite(relay, HIGH);  // Relay OFF pada awal (active LOW)
   
-  // Setup PWM dengan cara yang benar untuk ESP32
-  ledcAttachPin(pwmPin, 0);    // Attach pwmPin ke channel 0
-  ledcSetup(0, 5000, 8);       // Channel 0, Freq 5000Hz, 8-bit resolution
-  ledcWrite(0, 0);             // Set initial duty cycle to 0
-
+  // Setup PWM dengan cara yang benar - gunakan ledcAttach, bukan ledcAttachPin
+  ledcAttach(pwmPin, 5000, 8);  // Pin, Frequency 5000Hz, 8-bit resolution
+  ledcWrite(0, 0);              // Set initial duty cycle to 0
+  
   pinMode(gsrPin1, INPUT);
   pinMode(gsrPin2, INPUT);
 
@@ -319,24 +386,99 @@ void loop() {
   client.loop();
 
   // Baca nilai dari kedua sensor GSR
-  int gsrValue1 = analogRead(gsrPin1);
-  int gsrValue2 = analogRead(gsrPin2);
+  gsrValue1 = analogRead(gsrPin1);
+  gsrValue2 = analogRead(gsrPin2);
 
-  if (therapyActive) {
-    unsigned long currentTime = millis();
-    unsigned long elapsedTime = currentTime - therapyStartTime;
+  // Hitung nilai voltase yang akan ditampilkan
+  int displayVoltage = map(voltageLevel, 0, 100, 0, 24);
+
+  // JANGAN proses fuzzy jika dalam terapi aktif
+  if (!therapyActive) {
+    // Proses fuzzy hanya saat standby
+    fuzzy->setInput(1, gsrValue1);
+    fuzzy->fuzzify();
+    float optimalVoltage = fuzzy->defuzzify(1);
+    float optimalDuration = fuzzy->defuzzify(2);
     
-    // Debug print untuk relay
-    Serial.print("Therapy Active. Relay state: ");
-    Serial.println(digitalRead(relay) == LOW ? "ON" : "OFF");
+    // Setel voltage saat tidak aktif terapi
+    voltageLevel = map(optimalVoltage, 0, 24, 0, 100);
+    int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
+    ledcWrite(0, dutyCycle);
+    
+    therapyDuration = optimalDuration * 60 * 1000;
+    displayVoltage = map(voltageLevel, 0, 100, 0, 24);
+  } else {
+    // SANGAT PENTING: Pastikan relay dan PWM tetap aktif selama terapi
+    digitalWrite(relay, LOW);  // Aktifkan relay (LOW = ON pada umumnya)
+    
+    // Pastikan PWM tetap dioutputkan dengan nilai yang benar
+    int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
+    ledcWrite(0, dutyCycle);
+    
+    // Debug
+    Serial.print("PWM Duty Cycle: ");
+    Serial.println(dutyCycle);
+  }
+
+  // Tampilkan informasi pada OLED dengan format yang jelas
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  
+  // Tampilkan status di bagian atas
+  display.setCursor(0, 0);
+  display.print(therapyActive ? "STATUS: AKTIF" : "STATUS: SIAP");
+  
+  // Tampilkan voltase dengan ukuran besar di tengah
+  display.setCursor(0, 16);
+  display.setTextSize(2);
+  display.print("VOLT: ");
+  display.print(displayVoltage);
+  display.print("V");
+  
+  // Kembali ke ukuran teks normal untuk informasi lainnya
+  display.setTextSize(1);
+  
+  // Tampilkan durasi
+  display.setCursor(0, 40);
+  display.print("Durasi: ");
+  display.print(therapyDuration / 60000);
+  display.print(" menit");
+  
+  // Tampilkan waktu tersisa jika terapi aktif
+  if (therapyActive) {
+    unsigned long elapsedTime = millis() - therapyStartTime;
+    unsigned long remainingTime = (therapyDuration > elapsedTime) ? 
+                                 (therapyDuration - elapsedTime) / 1000 : 0;
+    
+    display.setCursor(0, 50);
+    display.print("Sisa: ");
+    display.print(remainingTime);
+    display.print(" detik");
+  }
+  
+  display.display();
+  client.publish(mqtt_topic, gsrStr.c_str()); 
+
+  // Debug log untuk monitoring
+  if (therapyActive) {
+    unsigned long elapsedTime = millis() - therapyStartTime;
+    Serial.print("Therapy Active: ");
+    Serial.print(elapsedTime / 1000);
+    Serial.print("s / ");
+    Serial.print(therapyDuration / 1000);
+    Serial.println("s");
+    Serial.print("Relay PIN STATE: ");
+    Serial.println(digitalRead(relay));
     Serial.print("Voltage Level: ");
-    Serial.println(voltageLevel);
+    Serial.print(displayVoltage);
+    Serial.println("V");
     
     // Kirim status setiap 1 detik
     static unsigned long lastStatusTime = 0;
-    if (currentTime - lastStatusTime >= 1000) {
+    if (millis() - lastStatusTime >= 1000) {
       sendStatusMessage();
-      lastStatusTime = currentTime;
+      lastStatusTime = millis();
     }
     
     // Cek apakah terapi sudah selesai
