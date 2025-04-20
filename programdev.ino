@@ -70,15 +70,25 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message received from topic [");
   Serial.print(topic);
   Serial.print("]: ");
+  
+  String message = "";
   for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
     Serial.print((char)payload[i]);
   }
   Serial.println();
 
   if (strcmp(topic, control_topic) == 0) {
-    String message = String((char*)payload, length);
     if (message.equalsIgnoreCase("start")) {
       if (!therapyActive) {
+        // Pastikan ada durasi default jika belum diset
+        if (therapyDuration == 0) {
+          therapyDuration = 60 * 1000; // Default 1 menit jika tidak diset
+        }
+        // Set voltage default jika 0
+        if (voltageLevel == 0) {
+          voltageLevel = 50; // Set ke 50% sebagai default
+        }
         startTherapy();
       } else {
         Serial.println("Therapy is already running.");
@@ -93,11 +103,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (strcmp(topic, duration_topic) == 0) {
-    String message = String((char*)payload, length);
-    therapyDuration = message.toInt() * 60 * 1000; // Konversi ke milidetik
-    Serial.print("New therapy duration set to: ");
-    Serial.print(therapyDuration / 60000);
-    Serial.println(" minutes");
+    int duration = message.toInt();
+    if (duration > 0) {
+      therapyDuration = duration * 60 * 1000; // Konversi ke milidetik
+      Serial.print("New therapy duration set to: ");
+      Serial.print(therapyDuration / 60000);
+      Serial.println(" minutes");
+    }
   }
 }
 
@@ -155,7 +167,14 @@ void setVoltage(int level) {
 void startTherapy() {
   therapyStartTime = millis();
   therapyActive = true;
+  
+  // Pastikan relay menyala
   digitalWrite(relay, LOW); // Menyalakan relay
+  
+  // Set voltage jika masih 0
+  if (voltageLevel == 0) {
+    voltageLevel = 50; // Set ke 50% sebagai default
+  }
   
   // Kirim status mulai terapi
   StaticJsonDocument<CAPACITY> doc;
@@ -168,6 +187,12 @@ void startTherapy() {
   client.publish(status_topic, jsonBuffer);
   
   Serial.println("Therapy started.");
+  Serial.print("Duration: ");
+  Serial.print(therapyDuration / 60000);
+  Serial.println(" minutes");
+  Serial.print("Voltage: ");
+  Serial.print(map(voltageLevel, 0, 100, 0, 24));
+  Serial.println(" V");
 }
 
 void stopTherapy() {
@@ -324,7 +349,14 @@ void loop() {
   client.publish(mqtt_topic, gsrStr.c_str()); 
 
   if (therapyActive) {
-    // Kirim status update setiap loop
+    // Pastikan relay tetap menyala selama terapi aktif
+    digitalWrite(relay, LOW);
+    
+    // Pastikan voltage tidak 0
+    if (voltageLevel == 0) {
+      voltageLevel = 50;
+    }
+    
     sendStatusUpdate();
     
     if (millis() - therapyStartTime >= therapyDuration) {
