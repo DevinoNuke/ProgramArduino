@@ -82,12 +82,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
   
   // Parse JSON message
   DeserializationError error = deserializeJson(doc, payload, length);
-  
-  if (error) {
-    String errorMsg = "{\"status\": \"error\", \"message\": \"Format JSON tidak valid\"}";
-    client.publish(status_topic, errorMsg.c_str());
-    return;
-  }
 
   if (strcmp(topic, control_topic) == 0) {
     // Cek command dari JSON
@@ -389,8 +383,9 @@ void loop() {
   gsrValue1 = analogRead(gsrPin1);
   gsrValue2 = analogRead(gsrPin2);
 
-  // Hitung nilai voltase yang akan ditampilkan
-  int displayVoltage = map(voltageLevel, 0, 100, 0, 24);
+  // Kirim data GSR ke mqtt_topic (sensor/gsr) dalam format string
+  String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
+  client.publish(mqtt_topic, gsrStr.c_str());
 
   // JANGAN proses fuzzy jika dalam terapi aktif
   if (!therapyActive) {
@@ -402,11 +397,10 @@ void loop() {
     
     // Setel voltage saat tidak aktif terapi
     voltageLevel = map(optimalVoltage, 0, 24, 0, 100);
-    int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
+    int dutyCycle = map(voltageLevel, 0, 100, 0, 255);x
     ledcWrite(0, dutyCycle);
     
     therapyDuration = optimalDuration * 60 * 1000;
-    displayVoltage = map(voltageLevel, 0, 100, 0, 24);
   } else {
     // SANGAT PENTING: Pastikan relay dan PWM tetap aktif selama terapi
     digitalWrite(relay, LOW);  // Aktifkan relay (LOW = ON pada umumnya)
@@ -415,12 +409,31 @@ void loop() {
     int dutyCycle = map(voltageLevel, 0, 100, 0, 255);
     ledcWrite(0, dutyCycle);
     
-    // Debug
-    Serial.print("PWM Duty Cycle: ");
-    Serial.println(dutyCycle);
+    // Kirim status terapi (JSON) setiap 1 detik
+    static unsigned long lastStatusTime = 0;
+    if (millis() - lastStatusTime >= 1000) {
+      sendStatusMessage();
+      lastStatusTime = millis();
+    }
+    
+    // Cek apakah terapi sudah selesai
+    unsigned long elapsedTime = millis() - therapyStartTime;
+    if (elapsedTime >= therapyDuration) {
+      stopTherapy();
+    }
   }
 
-  // Tampilkan informasi pada OLED dengan format yang jelas
+  // Tampilkan informasi pada OLED
+  displayInfo();
+
+  // Beri delay untuk stabilitas
+  delay(500);
+}
+
+// Buat fungsi terpisah untuk menampilkan info di OLED
+void displayInfo() {
+  int displayVoltage = map(voltageLevel, 0, 100, 0, 24);
+  
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -449,7 +462,7 @@ void loop() {
   if (therapyActive) {
     unsigned long elapsedTime = millis() - therapyStartTime;
     unsigned long remainingTime = (therapyDuration > elapsedTime) ? 
-                                 (therapyDuration - elapsedTime) / 1000 : 0;
+                               (therapyDuration - elapsedTime) / 1000 : 0;
     
     display.setCursor(0, 50);
     display.print("Sisa: ");
@@ -458,44 +471,4 @@ void loop() {
   }
   
   display.display();
-  String gsrStr = String(gsrValue1) + "," + String(gsrValue2); 
-  client.publish(mqtt_topic, gsrStr.c_str()); 
-
-  // Debug log untuk monitoring
-  if (therapyActive) {
-    unsigned long elapsedTime = millis() - therapyStartTime;
-    Serial.print("Therapy Active: ");
-    Serial.print(elapsedTime / 1000);
-    Serial.print("s / ");
-    Serial.print(therapyDuration / 1000);
-    Serial.println("s");
-    Serial.print("Relay PIN STATE: ");
-    Serial.println(digitalRead(relay));
-    Serial.print("Voltage Level: ");
-    Serial.print(displayVoltage);
-    Serial.println("V");
-    
-    // Kirim status setiap 1 detik
-    static unsigned long lastStatusTime = 0;
-    if (millis() - lastStatusTime >= 1000) {
-      sendStatusMessage();
-      lastStatusTime = millis();
-    }
-    
-    // Cek apakah terapi sudah selesai
-    if (elapsedTime >= therapyDuration) {
-      stopTherapy();
-    }
-  }
-
-  // Format GSR data sebagai JSON
-  StaticJsonDocument<CAPACITY> gsrDoc;
-  gsrDoc["gsr1"] = gsrValue1;
-  gsrDoc["gsr2"] = gsrValue2;
-  
-  char gsrBuffer[256];
-  serializeJson(gsrDoc, gsrBuffer);
-  client.publish(status_topic, gsrBuffer);
-
-  delay(500);
 }
